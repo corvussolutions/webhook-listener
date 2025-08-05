@@ -14,6 +14,14 @@ logging.basicConfig(
 app = Flask(__name__)
 logger = logging.getLogger(__name__)
 
+# Add CORS support
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
 @app.route('/', methods=['GET'])
 def home():
     logger.info("Home endpoint accessed")
@@ -25,15 +33,27 @@ def home():
         }
     })
 
-@app.route('/webhook', methods=['POST'])
+@app.route('/webhook', methods=['POST', 'OPTIONS'])
 def webhook():
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        logger.info("OPTIONS request received for /webhook")
+        return '', 200
     # Log timestamp
     timestamp = datetime.now().isoformat()
+    
+    logger.info(f"POST request received at /webhook at {timestamp}")
     
     # Get request details
     headers = dict(request.headers)
     method = request.method
     url = request.url
+    
+    # Log basic info immediately
+    logger.info(f"Method: {method}")
+    logger.info(f"URL: {url}")
+    logger.info(f"Content-Type: {request.content_type}")
+    logger.info(f"Content-Length: {request.content_length}")
     
     # Get body data in different formats
     raw_data = request.get_data(as_text=True)
