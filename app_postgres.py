@@ -80,20 +80,27 @@ def init_database():
                 title VARCHAR(500),
                 company VARCHAR(255),
                 location VARCHAR(255),
-                email VARCHAR(255) UNIQUE,
+                email VARCHAR(255),
                 linkedin_url VARCHAR(500),
                 website VARCHAR(500),
                 profile_data TEXT,
                 raw_json JSONB,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(email) DEFERRABLE INITIALLY DEFERRED,
+                UNIQUE(linkedin_url) DEFERRABLE INITIALLY DEFERRED
             )
         """)
         
         # Create indexes for better query performance
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_linkedin_contacts_email 
-            ON linkedin_contacts(email)
+            ON linkedin_contacts(email) WHERE email IS NOT NULL AND email != ''
+        """)
+        
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_linkedin_contacts_linkedin_url
+            ON linkedin_contacts(linkedin_url) WHERE linkedin_url IS NOT NULL AND linkedin_url != ''
         """)
         
         cursor.execute("""
@@ -112,7 +119,9 @@ def init_database():
                 log_id SERIAL PRIMARY KEY,
                 event_type VARCHAR(100),
                 contact_email VARCHAR(255),
-                contact_id VARCHAR(100),
+                contact_id INTEGER,
+                contact_name VARCHAR(255),
+                linkedin_url VARCHAR(500),
                 webhook_data JSONB,
                 received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 processed BOOLEAN DEFAULT FALSE,
@@ -218,75 +227,127 @@ def webhook():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Log the webhook event
+        # Log the webhook event (extract details for logging)
+        contact_info = data.get('contactInfo', {})
+        log_email = contact_info.get('email', '') if contact_info else ''
+        log_name = data.get('name', '')
+        log_linkedin = contact_info.get('linkedinUrl', '') if contact_info else data.get('profileUrl', '')
+        
         cursor.execute("""
-            INSERT INTO webhook_logs (event_type, contact_email, webhook_data)
-            VALUES (%s, %s, %s)
+            INSERT INTO webhook_logs (event_type, contact_email, contact_name, linkedin_url, webhook_data)
+            VALUES (%s, %s, %s, %s, %s)
             RETURNING log_id
         """, (
             'linkedin_data',
-            data.get('email'),
+            log_email,
+            log_name,
+            log_linkedin,
             json.dumps(data)
         ))
         log_id = cursor.fetchone()[0]
         logger.info(f"Created webhook log with ID: {log_id}")
         
-        # Extract contact information
+        # Extract contact information from new data structure
         name = data.get('name', '')
-        email = data.get('email', '')
-        logger.info(f"Processing contact - Name: {name}, Email: {email}")
+        contact_info = data.get('contactInfo', {})
+        email = contact_info.get('email', '') if contact_info else ''
+        linkedin_url = contact_info.get('linkedinUrl', '') if contact_info else data.get('profileUrl', '')
         
-        if not email:
+        # Extract websites
+        websites = contact_info.get('websites', []) if contact_info else []
+        website = websites[0]['url'] if websites else ''
+        
+        logger.info(f"Processing contact - Name: {name}, Email: {email}, LinkedIn: {linkedin_url}")
+        
+        # Use email if available, otherwise use LinkedIn URL as unique identifier
+        unique_identifier = email if email else linkedin_url
+        
+        if not unique_identifier:
             conn.commit()
-            logger.warning(f"Skipping contact due to missing email. Data keys: {list(data.keys())}")
+            logger.warning(f"Skipping contact - no email or LinkedIn URL. Data keys: {list(data.keys())}")
             return jsonify({
                 'status': 'skipped',
-                'message': 'No email provided',
+                'message': 'No email or LinkedIn URL provided',
                 'log_id': log_id,
                 'data_keys': list(data.keys())
             }), 200
         
-        # Upsert contact data
-        cursor.execute("""
-            INSERT INTO linkedin_contacts 
-            (name, title, company, location, email, linkedin_url, website, profile_data, raw_json)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (email) DO UPDATE SET
-                name = EXCLUDED.name,
-                title = EXCLUDED.title,
-                company = EXCLUDED.company,
-                location = EXCLUDED.location,
-                linkedin_url = EXCLUDED.linkedin_url,
-                website = EXCLUDED.website,
-                profile_data = EXCLUDED.profile_data,
-                raw_json = EXCLUDED.raw_json,
-                updated_at = CURRENT_TIMESTAMP
-            RETURNING id, (xmax = 0) AS inserted
-        """, (
-            name,
-            data.get('title', ''),
-            data.get('company', ''),
-            data.get('location', ''),
-            email,
-            data.get('linkedin_url', ''),
-            data.get('website', ''),
-            data.get('profile_data', ''),
-            json.dumps(data)
-        ))
+        # Smart upsert: match by email if available, otherwise by LinkedIn URL
+        if email:
+            # Try to find existing record by email first
+            cursor.execute("""
+                INSERT INTO linkedin_contacts 
+                (name, title, company, location, email, linkedin_url, website, profile_data, raw_json)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (email) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    title = EXCLUDED.title,
+                    company = EXCLUDED.company,
+                    location = EXCLUDED.location,
+                    linkedin_url = EXCLUDED.linkedin_url,
+                    website = EXCLUDED.website,
+                    profile_data = EXCLUDED.profile_data,
+                    raw_json = EXCLUDED.raw_json,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING id, (xmax = 0) AS inserted
+            """, (
+                name,
+                data.get('title', ''),
+                data.get('company', ''),
+                data.get('location', ''),
+                email,
+                linkedin_url,
+                website,
+                data.get('profile_data', ''),
+                json.dumps(data)
+            ))
+        else:
+            # No email, use LinkedIn URL for matching
+            cursor.execute("""
+                INSERT INTO linkedin_contacts 
+                (name, title, company, location, email, linkedin_url, website, profile_data, raw_json)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (linkedin_url) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    title = EXCLUDED.title,
+                    company = EXCLUDED.company,
+                    location = EXCLUDED.location,
+                    email = CASE 
+                        WHEN EXCLUDED.email != '' THEN EXCLUDED.email 
+                        ELSE linkedin_contacts.email 
+                    END,
+                    website = EXCLUDED.website,
+                    profile_data = EXCLUDED.profile_data,
+                    raw_json = EXCLUDED.raw_json,
+                    updated_at = CURRENT_TIMESTAMP
+                RETURNING id, (xmax = 0) AS inserted
+            """, (
+                name,
+                data.get('title', ''),
+                data.get('company', ''),
+                data.get('location', ''),
+                email or None,  # Allow NULL emails
+                linkedin_url,
+                website,
+                data.get('profile_data', ''),
+                json.dumps(data)
+            ))
         
         result = cursor.fetchone()
         contact_id = result[0]
         was_inserted = result[1]
         logger.info(f"Database operation completed - Contact ID: {contact_id}, Inserted: {was_inserted}")
         
-        # Mark webhook as processed
+        # Mark webhook as processed with contact_id
         cursor.execute("""
             UPDATE webhook_logs 
             SET processed = TRUE, 
+                contact_id = %s,
                 processing_notes = %s
             WHERE log_id = %s
         """, (
-            f"Contact {'created' if was_inserted else 'updated'} with ID {contact_id}",
+            contact_id,
+            f"Contact {'created' if was_inserted else 'updated'} with ID {contact_id} (matched by {'email' if email else 'LinkedIn URL'})",
             log_id
         ))
         
@@ -294,13 +355,16 @@ def webhook():
         cursor.close()
         conn.close()
         
-        logger.info(f"{'Created' if was_inserted else 'Updated'} contact: {email}")
+        logger.info(f"{'Created' if was_inserted else 'Updated'} contact: {name} (matched by {'email' if email else 'LinkedIn URL'})")
         
         return jsonify({
             'status': 'success',
             'action': 'created' if was_inserted else 'updated',
             'contact_id': contact_id,
+            'name': name,
             'email': email,
+            'linkedin_url': linkedin_url,
+            'matched_by': 'email' if email else 'linkedin_url',
             'log_id': log_id
         }), 201 if was_inserted else 200
         
@@ -467,8 +531,8 @@ def webhook_logs():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         
         cursor.execute("""
-            SELECT log_id, event_type, contact_email, 
-                   received_at, processed, processing_notes
+            SELECT log_id, event_type, contact_email, contact_id, contact_name,
+                   linkedin_url, received_at, processed, processing_notes
             FROM webhook_logs
             ORDER BY received_at DESC
             LIMIT %s
