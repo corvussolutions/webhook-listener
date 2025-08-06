@@ -209,8 +209,10 @@ def webhook():
     """Main webhook endpoint for receiving LinkedIn data"""
     try:
         data = request.get_json()
+        logger.info(f"Received webhook data: {data}")
         
         if not data:
+            logger.error("No JSON data provided in webhook request")
             return jsonify({'error': 'No data provided'}), 400
         
         conn = get_db_connection()
@@ -227,17 +229,21 @@ def webhook():
             json.dumps(data)
         ))
         log_id = cursor.fetchone()[0]
+        logger.info(f"Created webhook log with ID: {log_id}")
         
         # Extract contact information
         name = data.get('name', '')
         email = data.get('email', '')
+        logger.info(f"Processing contact - Name: {name}, Email: {email}")
         
         if not email:
             conn.commit()
+            logger.warning(f"Skipping contact due to missing email. Data keys: {list(data.keys())}")
             return jsonify({
                 'status': 'skipped',
                 'message': 'No email provided',
-                'log_id': log_id
+                'log_id': log_id,
+                'data_keys': list(data.keys())
             }), 200
         
         # Upsert contact data
@@ -271,6 +277,7 @@ def webhook():
         result = cursor.fetchone()
         contact_id = result[0]
         was_inserted = result[1]
+        logger.info(f"Database operation completed - Contact ID: {contact_id}, Inserted: {was_inserted}")
         
         # Mark webhook as processed
         cursor.execute("""
@@ -298,9 +305,12 @@ def webhook():
         }), 201 if was_inserted else 200
         
     except Exception as e:
-        logger.error(f"Webhook processing error: {e}")
-        if conn:
-            conn.rollback()
+        logger.error(f"Webhook processing error: {e}", exc_info=True)
+        try:
+            if 'conn' in locals() and conn:
+                conn.rollback()
+        except:
+            pass
         return jsonify({
             'status': 'error',
             'message': str(e)
