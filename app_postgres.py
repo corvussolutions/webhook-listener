@@ -167,6 +167,11 @@ def init_database():
             logger.info("Added contact_name column")
             cursor.execute("ALTER TABLE webhook_logs ADD COLUMN IF NOT EXISTS linkedin_url VARCHAR(500)")
             logger.info("Added linkedin_url column")
+            cursor.execute("ALTER TABLE webhook_logs ADD COLUMN IF NOT EXISTS processing_notes TEXT")
+            logger.info("Added processing_notes column")
+            cursor.execute("ALTER TABLE webhook_logs ADD COLUMN IF NOT EXISTS processed BOOLEAN DEFAULT FALSE")
+            logger.info("Added processed column")
+            
             # Try to convert contact_id to INTEGER if it's still VARCHAR
             cursor.execute("""
                 DO $$ 
