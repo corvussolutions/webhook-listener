@@ -93,15 +93,16 @@ def init_database():
         """)
         
         # Add constraints if they don't exist (for existing deployments)
+        # Note: Using regular UNIQUE constraints (not deferrable) for ON CONFLICT compatibility
         try:
             cursor.execute("""
                 DO $$ 
                 BEGIN
                     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'unique_email') THEN
-                        ALTER TABLE linkedin_contacts ADD CONSTRAINT unique_email UNIQUE(email) DEFERRABLE INITIALLY DEFERRED;
+                        ALTER TABLE linkedin_contacts ADD CONSTRAINT unique_email UNIQUE(email);
                     END IF;
                     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'unique_linkedin_url') THEN
-                        ALTER TABLE linkedin_contacts ADD CONSTRAINT unique_linkedin_url UNIQUE(linkedin_url) DEFERRABLE INITIALLY DEFERRED;
+                        ALTER TABLE linkedin_contacts ADD CONSTRAINT unique_linkedin_url UNIQUE(linkedin_url);
                     END IF;
                 END $$;
             """)
@@ -312,8 +313,8 @@ def webhook():
                 'data_keys': list(data.keys())
             }), 200
         
-        # Smart upsert: match by email if available, otherwise by LinkedIn URL
-        if email:
+        # Smart upsert: handle NULL/empty values properly for unique constraints
+        if email and email.strip():
             # Try to find existing record by email first
             cursor.execute("""
                 INSERT INTO linkedin_contacts 
@@ -335,27 +336,23 @@ def webhook():
                 data.get('title', ''),
                 data.get('company', ''),
                 data.get('location', ''),
-                email,
+                email.strip(),
                 linkedin_url,
                 website,
                 data.get('profile_data', ''),
                 json.dumps(data)
             ))
-        else:
-            # No email, use LinkedIn URL for matching
+        elif linkedin_url and linkedin_url.strip():
+            # No valid email, use LinkedIn URL for matching
             cursor.execute("""
                 INSERT INTO linkedin_contacts 
-                (name, title, company, location, email, linkedin_url, website, profile_data, raw_json)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (name, title, company, location, linkedin_url, website, profile_data, raw_json)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (linkedin_url) DO UPDATE SET
                     name = EXCLUDED.name,
                     title = EXCLUDED.title,
                     company = EXCLUDED.company,
                     location = EXCLUDED.location,
-                    email = CASE 
-                        WHEN EXCLUDED.email != '' THEN EXCLUDED.email 
-                        ELSE linkedin_contacts.email 
-                    END,
                     website = EXCLUDED.website,
                     profile_data = EXCLUDED.profile_data,
                     raw_json = EXCLUDED.raw_json,
@@ -366,8 +363,23 @@ def webhook():
                 data.get('title', ''),
                 data.get('company', ''),
                 data.get('location', ''),
-                email or None,  # Allow NULL emails
-                linkedin_url,
+                linkedin_url.strip(),
+                website,
+                data.get('profile_data', ''),
+                json.dumps(data)
+            ))
+        else:
+            # Neither email nor LinkedIn URL - insert without unique constraint matching
+            cursor.execute("""
+                INSERT INTO linkedin_contacts 
+                (name, title, company, location, website, profile_data, raw_json)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, TRUE AS inserted
+            """, (
+                name,
+                data.get('title', ''),
+                data.get('company', ''),
+                data.get('location', ''),
                 website,
                 data.get('profile_data', ''),
                 json.dumps(data)
