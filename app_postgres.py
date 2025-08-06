@@ -51,9 +51,24 @@ def get_db_connection():
 
 def init_database():
     """Initialize database tables if they don't exist"""
+    conn = None
+    cursor = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        
+        # Check if tables already exist before trying to create
+        cursor.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = 'linkedin_contacts'
+            )
+        """)
+        
+        if cursor.fetchone()[0]:
+            logger.info("Database tables already exist")
+            return
         
         # Create linkedin_contacts table with proper indexes
         cursor.execute("""
@@ -469,14 +484,36 @@ def webhook_logs():
             'message': str(e)
         }), 500
 
-# Initialize database on startup
-try:
-    logger.info("Initializing database tables...")
-    init_database()
-    logger.info("Database initialization complete")
-except Exception as e:
-    logger.error(f"Failed to initialize database on startup: {e}")
-    # Continue anyway - tables might already exist
+# Initialize database on startup (with singleton pattern)
+_db_initialized = False
+_init_lock = False
+
+def ensure_db_initialized():
+    """Ensure database is initialized only once"""
+    global _db_initialized, _init_lock
+    
+    if _db_initialized:
+        return
+    
+    # Simple lock to prevent multiple workers from initializing
+    if _init_lock:
+        import time
+        time.sleep(2)  # Wait for other worker to finish
+        return
+    
+    _init_lock = True
+    try:
+        logger.info("Initializing database tables...")
+        init_database()
+        _db_initialized = True
+        logger.info("Database initialization complete")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+    finally:
+        _init_lock = False
+
+# Initialize on startup
+ensure_db_initialized()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
