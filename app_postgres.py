@@ -68,9 +68,11 @@ def init_database():
             )
         """)
         
-        if cursor.fetchone()[0]:
-            logger.info("Database tables already exist")
-            return
+        tables_exist = cursor.fetchone()[0]
+        if tables_exist:
+            logger.info("Database tables already exist - running migrations")
+        else:
+            logger.info("Creating new database tables")
         
         # Create linkedin_contacts table with proper indexes
         cursor.execute("""
@@ -142,10 +144,13 @@ def init_database():
             )
         """)
         
-        # Add new columns if they don't exist (for existing deployments)
+        # Always run migrations for webhook_logs table (even if tables exist)
+        logger.info("Running webhook_logs table migrations...")
         try:
             cursor.execute("ALTER TABLE webhook_logs ADD COLUMN IF NOT EXISTS contact_name VARCHAR(255)")
+            logger.info("Added contact_name column")
             cursor.execute("ALTER TABLE webhook_logs ADD COLUMN IF NOT EXISTS linkedin_url VARCHAR(500)")
+            logger.info("Added linkedin_url column")
             # Try to convert contact_id to INTEGER if it's still VARCHAR
             cursor.execute("""
                 DO $$ 
@@ -155,11 +160,13 @@ def init_database():
                               AND data_type='character varying') THEN
                         ALTER TABLE webhook_logs ALTER COLUMN contact_id TYPE INTEGER USING 
                             CASE WHEN contact_id ~ '^[0-9]+$' THEN contact_id::INTEGER ELSE NULL END;
+                        RAISE NOTICE 'Converted contact_id to INTEGER';
                     END IF;
                 END $$;
             """)
+            logger.info("Checked contact_id type conversion")
         except Exception as alter_error:
-            logger.info(f"Schema alteration note: {alter_error}")
+            logger.error(f"Schema alteration error: {alter_error}")
             # Continue - may be type conversion issues on existing data
         
         # Create index for webhook logs
