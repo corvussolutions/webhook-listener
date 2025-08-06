@@ -9,6 +9,7 @@ import json
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 from datetime import datetime
 from urllib.parse import urlparse
 import logging
@@ -19,6 +20,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
 
 # Database connection configuration
 DATABASE_URL = os.environ.get('DATABASE_URL')
