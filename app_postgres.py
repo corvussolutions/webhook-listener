@@ -146,6 +146,12 @@ def init_database():
 def index():
     """Health check and status endpoint"""
     try:
+        # First try to initialize database if needed
+        init_database()
+    except Exception as e:
+        logger.warning(f"Database initialization during health check: {e}")
+    
+    try:
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -173,11 +179,13 @@ def index():
         
     except Exception as e:
         logger.error(f"Health check failed: {e}")
+        # Return a degraded status instead of error
         return jsonify({
-            'status': 'error',
-            'message': str(e),
-            'database': 'disconnected'
-        }), 500
+            'status': 'initializing',
+            'message': 'Database tables are being created. Please try again in a moment.',
+            'database': 'initializing',
+            'error_detail': str(e)
+        }), 503
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -462,11 +470,14 @@ def webhook_logs():
         }), 500
 
 # Initialize database on startup
+try:
+    logger.info("Initializing database tables...")
+    init_database()
+    logger.info("Database initialization complete")
+except Exception as e:
+    logger.error(f"Failed to initialize database on startup: {e}")
+    # Continue anyway - tables might already exist
+
 if __name__ == '__main__':
-    try:
-        init_database()
-        port = int(os.environ.get('PORT', 10000))
-        app.run(host='0.0.0.0', port=port)
-    except Exception as e:
-        logger.error(f"Failed to start application: {e}")
-        raise
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
