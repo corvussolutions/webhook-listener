@@ -5,7 +5,8 @@ services:
     buildCommand: |
       pip install -r requirements.txt
       python init_db.py || echo "Database initialization will run on first request"
-    startCommand: gunicorn app_postgres:app
+      python fix_schema.py || echo "Schema fix will run on first request"
+    startCommand: gunicorn app_postgres_fixed:app
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
