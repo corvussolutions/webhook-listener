@@ -86,11 +86,26 @@ def init_database():
                 profile_data TEXT,
                 raw_json JSONB,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(email) DEFERRABLE INITIALLY DEFERRED,
-                UNIQUE(linkedin_url) DEFERRABLE INITIALLY DEFERRED
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        
+        # Add constraints if they don't exist (for existing deployments)
+        try:
+            cursor.execute("""
+                DO $$ 
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'unique_email') THEN
+                        ALTER TABLE linkedin_contacts ADD CONSTRAINT unique_email UNIQUE(email) DEFERRABLE INITIALLY DEFERRED;
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'unique_linkedin_url') THEN
+                        ALTER TABLE linkedin_contacts ADD CONSTRAINT unique_linkedin_url UNIQUE(linkedin_url) DEFERRABLE INITIALLY DEFERRED;
+                    END IF;
+                END $$;
+            """)
+        except Exception as constraint_error:
+            logger.info(f"Constraint addition note: {constraint_error}")
+            # Continue - constraints may already exist or conflict
         
         # Create indexes for better query performance
         cursor.execute("""
@@ -119,15 +134,33 @@ def init_database():
                 log_id SERIAL PRIMARY KEY,
                 event_type VARCHAR(100),
                 contact_email VARCHAR(255),
-                contact_id INTEGER,
-                contact_name VARCHAR(255),
-                linkedin_url VARCHAR(500),
+                contact_id VARCHAR(100),
                 webhook_data JSONB,
                 received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 processed BOOLEAN DEFAULT FALSE,
                 processing_notes TEXT
             )
         """)
+        
+        # Add new columns if they don't exist (for existing deployments)
+        try:
+            cursor.execute("ALTER TABLE webhook_logs ADD COLUMN IF NOT EXISTS contact_name VARCHAR(255)")
+            cursor.execute("ALTER TABLE webhook_logs ADD COLUMN IF NOT EXISTS linkedin_url VARCHAR(500)")
+            # Try to convert contact_id to INTEGER if it's still VARCHAR
+            cursor.execute("""
+                DO $$ 
+                BEGIN
+                    IF EXISTS (SELECT 1 FROM information_schema.columns 
+                              WHERE table_name='webhook_logs' AND column_name='contact_id' 
+                              AND data_type='character varying') THEN
+                        ALTER TABLE webhook_logs ALTER COLUMN contact_id TYPE INTEGER USING 
+                            CASE WHEN contact_id ~ '^[0-9]+$' THEN contact_id::INTEGER ELSE NULL END;
+                    END IF;
+                END $$;
+            """)
+        except Exception as alter_error:
+            logger.info(f"Schema alteration note: {alter_error}")
+            # Continue - may be type conversion issues on existing data
         
         # Create index for webhook logs
         cursor.execute("""
