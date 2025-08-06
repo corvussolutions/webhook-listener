@@ -92,22 +92,37 @@ def init_database():
             )
         """)
         
-        # Add constraints if they don't exist (for existing deployments)
+        # Drop and recreate constraints as non-deferrable (for existing deployments)
         # Note: Using regular UNIQUE constraints (not deferrable) for ON CONFLICT compatibility
         try:
+            logger.info("Dropping existing deferrable constraints if they exist...")
+            cursor.execute("ALTER TABLE linkedin_contacts DROP CONSTRAINT IF EXISTS unique_email")
+            cursor.execute("ALTER TABLE linkedin_contacts DROP CONSTRAINT IF EXISTS unique_linkedin_url")
+            
+            logger.info("Creating non-deferrable unique constraints...")
             cursor.execute("""
                 DO $$ 
                 BEGIN
-                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'unique_email') THEN
+                    BEGIN
                         ALTER TABLE linkedin_contacts ADD CONSTRAINT unique_email UNIQUE(email);
-                    END IF;
-                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'unique_linkedin_url') THEN
+                        RAISE NOTICE 'Created unique_email constraint';
+                    EXCEPTION 
+                        WHEN duplicate_table THEN 
+                            RAISE NOTICE 'unique_email constraint already exists';
+                    END;
+                    
+                    BEGIN
                         ALTER TABLE linkedin_contacts ADD CONSTRAINT unique_linkedin_url UNIQUE(linkedin_url);
-                    END IF;
+                        RAISE NOTICE 'Created unique_linkedin_url constraint';
+                    EXCEPTION 
+                        WHEN duplicate_table THEN 
+                            RAISE NOTICE 'unique_linkedin_url constraint already exists';
+                    END;
                 END $$;
             """)
+            logger.info("Constraint recreation completed")
         except Exception as constraint_error:
-            logger.info(f"Constraint addition note: {constraint_error}")
+            logger.error(f"Constraint recreation error: {constraint_error}")
             # Continue - constraints may already exist or conflict
         
         # Create indexes for better query performance
